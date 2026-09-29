@@ -70,7 +70,7 @@ pub fn truncate_query(query: &str) -> &str {
 }
 
 // Re-export the index and related types
-pub use index::{IndexFilterMode, LoadFromDbError, SearchIndex};
+pub use index::{IndexFilterMode, SearchIndex};
 
 #[cfg(test)]
 mod tests {

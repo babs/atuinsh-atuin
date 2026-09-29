@@ -20,9 +20,9 @@ use crate::grpc::history::pb::history_server::History as GrpcService;
 use crate::grpc::history::pb::{
     CancelHistoryReply, CancelHistoryRequest, CompactStoreReply, CompactStoreRequest,
     DeleteHistoryReply, DeleteHistoryRequest, DeleteHistoryStreamExt, EndHistoryReply,
-    EndHistoryRequest, GetCommandOutputRequest, GetCommandOutputResponse, RebuildHistoryReply,
-    RebuildHistoryRequest, RegisterCommandOutputRequest, RegisterCommandOutputResponse,
-    ReloadHistoryReply, ReloadHistoryRequest, ShutdownReply, ShutdownRequest, StartHistoryReply,
+    EndHistoryRequest, GetCommandOutputRequest, GetCommandOutputResponse, ImportHistoryReply,
+    ImportHistoryRequest, RebuildHistoryReply, RebuildHistoryRequest, RegisterCommandOutputRequest,
+    RegisterCommandOutputResponse, ShutdownReply, ShutdownRequest, StartHistoryReply,
     StartHistoryRequest, StatusReply, StatusRequest, TailHistoryEvent, TailHistoryReply,
     TailHistoryRequest,
 };
@@ -155,14 +155,22 @@ impl GrpcService for Service {
     }
 
     #[instrument(skip_all, level = Level::TRACE)]
-    async fn reload_history(
+    async fn import_history(
         &self,
-        _request: Request<ReloadHistoryRequest>,
-    ) -> Result<Response<ReloadHistoryReply>, Status> {
-        let search_settings = self.daemon_handle.settings().await.search.clone();
-        self.journal.reload(&search_settings).await?;
+        request: Request<ImportHistoryRequest>,
+    ) -> Result<Response<ImportHistoryReply>, Status> {
+        let histories = request.into_inner().into_histories()?;
 
-        Ok(Response::new(ReloadHistoryReply {
+        let journal = self.journal.clone();
+        // Spawned so a client disconnect cannot drop the call half-way.
+        let imported = tokio::spawn(
+            async move { journal.import(histories).await }.instrument(tracing::Span::current()),
+        )
+        .await
+        .map_err(|e| Status::internal(format!("import did not complete: {e}")))??;
+
+        Ok(Response::new(ImportHistoryReply {
+            imported: imported.cast(),
             version: crate::VERSION.to_string(),
             protocol: crate::PROTOCOL_VERSION,
         }))

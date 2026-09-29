@@ -291,6 +291,21 @@ impl HistoryStore {
         self.delete_batch(entries.into_iter().map(|entry| entry.id)).await
     }
 
+    /// Add externally-sourced history (e.g. from a shell's history file) to `database` and the store.
+    ///
+    /// Importers mint fresh ids on every run, so re-imported entries are recognised by the
+    /// database's `(timestamp, cwd, command)` uniqueness instead. Only entries the database didn't
+    /// already have are pushed to the store; those are returned.
+    #[instrument(level = "trace", skip_all, fields(host = ?self.host_id, count = histories.len()), err)]
+    pub async fn import(&self, database: &Sqlite, histories: Vec<History>) -> Result<Vec<History>> {
+        let inserted: HashSet<HistoryId> =
+            database.save_bulk(&histories).await?.into_iter().collect();
+        let new: Vec<History> =
+            histories.into_iter().filter(|h| inserted.contains(&h.id)).collect();
+        self.push_batch(new.iter().cloned().map(HistoryRecord::Create)).await?;
+        Ok(new)
+    }
+
     #[instrument(level = "trace", skip_all, fields(host = ?self.host_id), err)]
     pub async fn push(&self, history: History) -> Result<(RecordId, RecordIdx)> {
         // TODO(ellie): move the history store to its own file
@@ -930,5 +945,47 @@ mod tests {
         assert!(db.load(histories[1].id).await.unwrap().is_some());
         assert!(db.load(histories[2].id).await.unwrap().is_none());
         assert!(history_store.delete_batch([]).await.unwrap().is_empty());
+    }
+
+    /// Re-importing the same shell history mints fresh ids, but the db recognises the entries by
+    /// `(timestamp, cwd, command)`: only genuinely new entries reach the db and the store.
+    #[rstest]
+    #[tokio::test]
+    async fn import_skips_entries_the_db_already_has(
+        #[future(awt)]
+        #[from(stores)]
+        parts: (SqliteStore, HostId, HistoryStore),
+    ) {
+        let (store, _host_id, history_store) = parts;
+        let db = memory_db().await;
+
+        let first: Vec<_> = (0..3).map(history_n).collect();
+        assert_eq!(history_store.import(&db, first.clone()).await.unwrap(), first);
+
+        let reimport: Vec<_> = (0..4)
+            .map(|n| History {
+                id: format!("{:032x}", 100 + n).parse().unwrap(),
+                ..history_n(n)
+            })
+            .collect();
+        let imported = history_store.import(&db, reimport.clone()).await.unwrap();
+        assert_eq!(imported, vec![reimport[3].clone()]);
+
+        assert_eq!(db.history_count(true).await.unwrap(), 4);
+        let mut stored: Vec<_> = history_store
+            .history()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| match record {
+                HistoryRecord::Create(h) => h.id,
+                HistoryRecord::Delete(id) => panic!("unexpected tombstone for {id}"),
+            })
+            .collect();
+        stored.sort();
+        let mut expected: Vec<_> = first.iter().chain([&reimport[3]]).map(|h| h.id).collect();
+        expected.sort();
+        assert_eq!(stored, expected);
+        assert_eq!(store.len_tag(&RecordTag::History).await.unwrap(), 4);
     }
 }

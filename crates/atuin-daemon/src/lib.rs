@@ -35,8 +35,8 @@ pub use components::SearchComponent;
 pub use daemon::{AnyComponent, Daemon, DaemonBuilder, DaemonHandle};
 pub use events::DaemonEvent;
 pub use history_journal::{
-    CmdCancelError, CmdDeleteError, CmdEvent, CmdFinishError, CmdRebuildError, FinishedCmd,
-    GetCmdInFlightError, HistoryJournal, RegisterOutputError,
+    CmdCancelError, CmdDeleteError, CmdEvent, CmdFinishError, CmdImportError, CmdRebuildError,
+    FinishedCmd, GetCmdInFlightError, HistoryJournal, RegisterOutputError,
 };
 pub use output_capture::{
     CaptureError, DeleteOutputError, GetOutputError, OutputCaptureEngine, OutputLine, OutputMatch,

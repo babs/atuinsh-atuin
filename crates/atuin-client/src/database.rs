@@ -440,11 +440,17 @@ impl Sqlite {
         Ok(())
     }
 
+    /// Insert `h`, skipping entries whose id or `(timestamp, cwd, command)` is already present.
+    ///
+    /// Returns the ids of the entries actually inserted, in no particular order.
     #[instrument(level = "trace", skip_all, err)]
-    pub async fn save_bulk<'a>(&self, h: impl IntoIterator<Item = &'a History>) -> Result<()> {
+    pub async fn save_bulk<'a>(
+        &self,
+        h: impl IntoIterator<Item = &'a History>,
+    ) -> Result<Vec<HistoryId>> {
         let mut h = h.into_iter().peekable();
         if h.peek().is_none() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         debug!("saving history to sqlite");
@@ -454,6 +460,7 @@ impl Sqlite {
             (self.sqlite.info().await.variable_number_limit() / HISTORY_INSERT_COLUMNS).max(1);
 
         let mut tx = self.sqlite.pool().begin().await?;
+        let mut inserted = Vec::new();
 
         while h.peek().is_some() {
             let mut builder = sqlx::QueryBuilder::new(
@@ -479,12 +486,13 @@ impl Sqlite {
                     .push_bind(h.author_kind.map(|kind| i64::from(kind.as_u8())));
             });
 
-            builder.build().execute(&mut *tx).await?;
+            builder.push(" returning id");
+            inserted.extend(builder.build_query_scalar::<HistoryId>().fetch_all(&mut *tx).await?);
         }
 
         tx.commit().await?;
 
-        Ok(())
+        Ok(inserted)
     }
 
     #[instrument(level = "trace", skip_all, fields(id = ?id), err)]

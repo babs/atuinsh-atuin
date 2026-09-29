@@ -25,11 +25,10 @@ pub use crate::grpc::common::pb::HistoryId;
 use crate::grpc::common::pb::{self as common, Uuid};
 use crate::grpc::common::{CollectCappedError, TryCollectResultsCappedExt};
 use crate::history_journal::{
-    CmdCancelError, CmdDeleteError, CmdEvent, CmdFinishError, CmdRebuildError, GetCmdInFlightError,
-    RegisterOutputError,
+    CmdCancelError, CmdDeleteError, CmdEvent, CmdFinishError, CmdImportError, CmdRebuildError,
+    GetCmdInFlightError, RegisterOutputError,
 };
 use crate::output_capture::{CaptureError, GetOutputError};
-use crate::search::LoadFromDbError;
 
 impl From<DomainHistoryId> for HistoryId {
     fn from(value: DomainHistoryId) -> Self {
@@ -97,6 +96,47 @@ impl From<History> for HistoryEntry {
             shell: history.shell.unwrap_or_default(),
             author_kind: AuthorKind::from(history.author_kind) as i32,
         }
+    }
+}
+
+/// Errors thrown parsing a [`HistoryEntry`].
+#[derive(Debug, Error)]
+pub enum HistoryEntryParseError {
+    #[error("missing history id")]
+    MissingId,
+    #[error("invalid id field: {0}")]
+    InvalidId(#[from] IdParseError),
+}
+
+impl TryFrom<HistoryEntry> for History {
+    type Error = HistoryEntryParseError;
+
+    fn try_from(entry: HistoryEntry) -> Result<Self, Self::Error> {
+        // `author_kind()` borrows `entry`, so read it before moving fields out.
+        let author_kind = entry.author_kind();
+        Ok(Self::from_db()
+            .id(entry.id.ok_or(HistoryEntryParseError::MissingId)?.try_into()?)
+            .timestamp(OffsetDateTime::from_unix_nanos_i64(entry.timestamp))
+            .command(entry.command)
+            .cwd(entry.cwd)
+            .exit(entry.exit)
+            .duration(entry.duration)
+            .session(entry.session)
+            .hostname(entry.hostname)
+            .author(entry.author)
+            .intent(Some(entry.intent).filter(|s| !s.is_empty()))
+            .deleted_at(None)
+            .shell(Some(entry.shell).filter(|s| !s.is_empty()))
+            .author_kind(author_kind.into())
+            .build()
+            .into())
+    }
+}
+
+impl ImportHistoryRequest {
+    /// Parse every entry, failing on the first malformed one.
+    pub fn into_histories(self) -> Result<Vec<History>, HistoryEntryParseError> {
+        self.entries.into_iter().map(History::try_from).collect()
     }
 }
 
@@ -471,6 +511,7 @@ impl GetCommandOutputResponse {
 invalid_argument_errors!(
     IdParseError,
     StartHistoryRequestParseError,
+    HistoryEntryParseError,
     EndHistoryRequestParseError,
     CancelHistoryRequestParseError,
     RegisterCommandOutputRequestParseError,
@@ -483,11 +524,11 @@ versioned_messages!(
     CancelHistoryReply,
     DeleteHistoryReply,
     RebuildHistoryReply,
-    ReloadHistoryReply,
+    ImportHistoryReply,
     CompactStoreReply,
 );
 
-internal_errors!(GetOutputError, LoadFromDbError);
+internal_errors!(GetOutputError, CmdImportError);
 
 #[cfg(test)]
 mod tests {
