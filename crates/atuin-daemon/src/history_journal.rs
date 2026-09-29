@@ -581,6 +581,13 @@ impl HistoryJournal {
             .await
             .map_err(CmdImportError::ImportFailed)?;
 
+        // Indexed before packing, which may wait on the server, to keep the window in which these
+        // rows are in the db but not yet searchable short.
+        //
+        // TODO(#4052): Like `finish`, this races `reload_search_index`: a delete landing between the
+        //              save above and this add can have the entry re-added after its reload.
+        self.search_index.read().await.add_histories(&imported);
+
         if let Err(e) = packfile::try_pack(
             &self.history_store.store,
             &RecordSeriesKey::new(self.history_store.host_id, RecordTag::History),
@@ -590,8 +597,6 @@ impl HistoryJournal {
         {
             tracing::warn!("packing failed: {e}");
         }
-
-        self.search_index.read().await.add_histories(&imported);
 
         Ok(imported.len())
     }

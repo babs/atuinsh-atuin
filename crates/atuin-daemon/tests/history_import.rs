@@ -87,3 +87,26 @@ async fn reimport_only_adds_new_entries(#[future(awt)] env: TestEnv, imported: V
     assert_eq!(hits, sorted_ids(&imported), "search still points at the original rows");
     assert_eq!(env.index_hits("brand new").await, vec![new.id]);
 }
+
+/// One importer batch of long commands (100 x 64 KiB) is past the daemon's 4 MiB message limit; the
+/// client must split it rather than fail the import part-way through.
+#[rstest]
+#[tokio::test]
+async fn import_splits_batches_past_the_message_limit(#[future(awt)] env: TestEnv) {
+    let mut client = env.history_client().await;
+    let start = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+    let long: Vec<_> = (0..100)
+        .map(|i| History {
+            duration: 1_000,
+            ..history_at(
+                &format!("echo long {i} {}", "x".repeat(64 * 1024)),
+                start + time::Duration::seconds(i),
+            )
+        })
+        .collect();
+
+    let reply = client.import_history(long).await.unwrap();
+    assert_eq!(reply.imported, 100);
+    assert_eq!(env.active_rows().await, 100);
+    assert_eq!(env.index_count().await, 100);
+}

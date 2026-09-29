@@ -67,6 +67,40 @@ pub fn socket_path(settings: &atuin_client::settings::Settings) -> PathBuf {
         .unwrap_or_else(|| settings.daemon.existing_socket_path().into_owned())
 }
 
+/// Encoded size budget for one [`ImportHistoryRequest`]: well under tonic's 4 MiB default
+/// decoding limit on the daemon, leaving room for framing.
+const IMPORT_REQUEST_MAX_BYTES: usize = 1024 * 1024;
+
+/// Split `entries` into requests whose entries encode to at most `max_bytes`, bar a lone entry that
+/// is larger by itself.
+///
+/// Always yields at least one (possibly empty) request, so the daemon still replies with its
+/// version when there is nothing to import.
+fn import_requests(
+    entries: impl IntoIterator<Item = HistoryEntry>,
+    max_bytes: usize,
+) -> Vec<ImportHistoryRequest> {
+    let mut requests = vec![ImportHistoryRequest::default()];
+    let mut size = 0;
+
+    for entry in entries {
+        let len = prost::Message::encoded_len(&entry);
+        let current = requests.last_mut().expect("starts non-empty and only grows");
+
+        if !current.entries.is_empty() && size + len > max_bytes {
+            requests.push(ImportHistoryRequest {
+                entries: vec![entry],
+            });
+            size = len;
+        } else {
+            current.entries.push(entry);
+            size += len;
+        }
+    }
+
+    requests
+}
+
 pub struct HistoryClient {
     client: HistoryServiceClient<Channel>,
 }
@@ -232,11 +266,26 @@ impl HistoryClient {
     }
 
     /// Import finished history (e.g. from a shell's history file) through the daemon.
+    ///
+    /// Entries are split across requests of at most 1 MiB each, so long commands can't push a
+    /// request past the daemon's message size limit. The returned reply counts every entry
+    /// imported across them.
     pub async fn import_history(&mut self, histories: Vec<History>) -> Result<ImportHistoryReply> {
-        let request = ImportHistoryRequest {
-            entries: histories.into_iter().map(HistoryEntry::from).collect(),
-        };
-        Ok(self.client.import_history(request).await?.into_inner())
+        let requests = import_requests(
+            histories.into_iter().map(HistoryEntry::from),
+            IMPORT_REQUEST_MAX_BYTES,
+        );
+
+        let mut imported = 0;
+        let mut last = None;
+        for request in requests {
+            let reply = self.client.import_history(request).await?.into_inner();
+            imported += reply.imported;
+            last = Some(reply);
+        }
+
+        let last = last.expect("import_requests always yields at least one request");
+        Ok(ImportHistoryReply { imported, ..last })
     }
 
     pub async fn compact_store(&mut self) -> Result<CompactStoreReply> {
@@ -610,6 +659,7 @@ impl AiClient {
 mod tests {
     use std::path::Path;
 
+    use proptest::prelude::*;
     use rstest::rstest;
 
     use super::*;
@@ -655,5 +705,42 @@ mod tests {
             systemd_socket,
         );
         assert_eq!(socket_path(&settings), dir.path().join("a.sock"));
+    }
+
+    fn entry(command_len: usize) -> HistoryEntry {
+        HistoryEntry {
+            command: "x".repeat(command_len),
+            ..HistoryEntry::default()
+        }
+    }
+
+    #[rstest]
+    fn import_requests_sends_one_empty_request_for_no_entries() {
+        let requests = import_requests([], IMPORT_REQUEST_MAX_BYTES);
+        assert_eq!(requests, vec![ImportHistoryRequest::default()]);
+    }
+
+    proptest! {
+        /// However entries are sized, splitting keeps every entry in order, never sends an empty
+        /// request alongside others, and keeps each request within budget unless it carries a lone
+        /// entry that is over budget by itself.
+        #[test]
+        fn import_requests_split_by_encoded_size(
+            lens in proptest::collection::vec(0usize..300, 0..50),
+            max_bytes in 1usize..1000,
+        ) {
+            let entries: Vec<_> = lens.iter().map(|&len| entry(len)).collect();
+            let requests = import_requests(entries.clone(), max_bytes);
+
+            prop_assert!(!requests.is_empty());
+            let flattened: Vec<_> = requests.iter().flat_map(|r| r.entries.clone()).collect();
+            prop_assert_eq!(flattened, entries);
+
+            for request in &requests {
+                prop_assert!(!request.entries.is_empty() || requests.len() == 1);
+                let size: usize = request.entries.iter().map(prost::Message::encoded_len).sum();
+                prop_assert!(size <= max_bytes || request.entries.len() == 1);
+            }
+        }
     }
 }
