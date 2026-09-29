@@ -29,6 +29,7 @@ use crate::history_journal::{
     RegisterOutputError,
 };
 use crate::output_capture::{CaptureError, GetOutputError};
+use crate::search::LoadFromDbError;
 
 impl From<DomainHistoryId> for HistoryId {
     fn from(value: DomainHistoryId) -> Self {
@@ -482,10 +483,11 @@ versioned_messages!(
     CancelHistoryReply,
     DeleteHistoryReply,
     RebuildHistoryReply,
+    ReloadHistoryReply,
     CompactStoreReply,
 );
 
-internal_errors!(GetOutputError);
+internal_errors!(GetOutputError, LoadFromDbError);
 
 #[cfg(test)]
 mod tests {

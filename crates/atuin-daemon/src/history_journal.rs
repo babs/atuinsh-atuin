@@ -99,7 +99,7 @@ use tracing::field::Empty;
 use tracing::{Instrument, Span};
 
 use crate::output_capture::{CaptureError, GetOutputError, OutputCaptureEngine};
-use crate::search::SearchIndex;
+use crate::search::{LoadFromDbError, SearchIndex};
 
 /// History-db rows removed per transaction by [`HistoryJournal::delete`]; matches the chunking of
 /// `HistoryStore::build_all`, which this path used to go through.
@@ -563,8 +563,9 @@ impl HistoryJournal {
         Ok(())
     }
 
-    /// Reload the search index from the history database.
-    async fn reload_search_index(&self, search_settings: &Search) {
+    /// Reload the search index from the history database, picking up rows another process wrote to
+    /// it directly (e.g. `atuin import`). On failure the previous index is kept.
+    pub async fn reload(&self, search_settings: &Search) -> Result<(), LoadFromDbError> {
         // Clone the shell filter and drop the read guard before the (full) reload, so the scan
         // doesn't hold the search-index lock across the database load.
         //
@@ -572,9 +573,15 @@ impl HistoryJournal {
         //              .read() and the subsequent .write() are completely discarded from the new
         //              index.
         let shells = self.search_index.read().await.shells.clone();
-        let rebuilt = SearchIndex::from_db(shells, &self.history_db, search_settings).await;
-        match rebuilt {
-            Ok(new_index) => *self.search_index.write().await = new_index,
+        let new_index = SearchIndex::from_db(shells, &self.history_db, search_settings).await?;
+        *self.search_index.write().await = new_index;
+        Ok(())
+    }
+
+    /// Reload the search index from the history database, logging (rather than returning) errors.
+    async fn reload_search_index(&self, search_settings: &Search) {
+        match self.reload(search_settings).await {
+            Ok(()) => {}
             Err(e) => {
                 // TODO(markovejnovic): This is obviously incorrect behavior, keeping the previous
                 //                      index is almost certainly wrong, however, is the legacy

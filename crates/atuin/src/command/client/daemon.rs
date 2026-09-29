@@ -471,6 +471,20 @@ pub async fn rebuild_history(settings: &Settings) -> Result<()> {
     Ok(())
 }
 
+/// Tell a running daemon to reload its search index from the history db.
+///
+/// Succeeds without doing anything if no daemon is reachable: a daemon builds its index from the
+/// db when it starts.
+pub async fn reload_history(settings: &Settings) -> Result<()> {
+    let client = match probe(settings).await {
+        Probe::Ready(client) => client,
+        Probe::NeedsRestart(reason) => bail!(reason),
+        Probe::Unreachable(_) => return Ok(()),
+    };
+    send_checked(settings, client, async |client| client.reload_history().await).await?;
+    Ok(())
+}
+
 pub async fn compact_store(settings: &Settings) -> Result<u64> {
     let reply = try_with_restart(settings, async |client| client.compact_store().await).await?;
     Ok(reply.rewritten)

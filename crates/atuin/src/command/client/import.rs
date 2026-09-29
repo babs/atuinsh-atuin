@@ -15,12 +15,15 @@ use atuin_client::import::xonsh_sqlite::XonshSqlite;
 use atuin_client::import::zsh::Zsh;
 use atuin_client::import::zsh_histdb::ZshHistDb;
 use atuin_client::import::{Importer, Loader};
+use atuin_client::settings::Settings;
 use clap::Parser;
 use easy_cast::Conv;
 use eyre::Result;
 use indicatif::ProgressBar;
 use tracing::instrument;
 
+#[cfg(feature = "daemon")]
+use super::daemon;
 use crate::i18n::fl;
 
 #[derive(Parser, Debug)]
@@ -56,9 +59,28 @@ pub enum Cmd {
 const BATCH_SIZE: usize = 100;
 
 impl Cmd {
-    #[allow(clippy::cognitive_complexity)]
     #[instrument(level = "trace", skip_all, err)]
-    pub async fn run(&self, db: &Sqlite) -> Result<()> {
+    #[cfg_attr(not(feature = "daemon"), allow(unused_variables))]
+    pub async fn run(&self, settings: &Settings, db: &Sqlite) -> Result<()> {
+        self.import(db).await?;
+
+        // The import wrote straight to the history db, so a running daemon's search index doesn't
+        // know about the new rows until it reloads.
+        #[cfg(feature = "daemon")]
+        if settings.daemon.enabled
+            && let Err(e) = daemon::reload_history(settings).await
+        {
+            eprintln!(
+                "Could not reload the daemon's search index ({e:#}). Imported commands may not \
+                 show up in search until you run `atuin daemon restart`."
+            );
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::cognitive_complexity)]
+    async fn import(&self, db: &Sqlite) -> Result<()> {
         println!("        Atuin         ");
         println!("======================");
         println!("          \u{1f30d}          ");

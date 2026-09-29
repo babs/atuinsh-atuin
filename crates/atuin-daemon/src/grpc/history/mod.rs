@@ -22,8 +22,9 @@ use crate::grpc::history::pb::{
     DeleteHistoryReply, DeleteHistoryRequest, DeleteHistoryStreamExt, EndHistoryReply,
     EndHistoryRequest, GetCommandOutputRequest, GetCommandOutputResponse, RebuildHistoryReply,
     RebuildHistoryRequest, RegisterCommandOutputRequest, RegisterCommandOutputResponse,
-    ShutdownReply, ShutdownRequest, StartHistoryReply, StartHistoryRequest, StatusReply,
-    StatusRequest, TailHistoryEvent, TailHistoryReply, TailHistoryRequest,
+    ReloadHistoryReply, ReloadHistoryRequest, ShutdownReply, ShutdownRequest, StartHistoryReply,
+    StartHistoryRequest, StatusReply, StatusRequest, TailHistoryEvent, TailHistoryReply,
+    TailHistoryRequest,
 };
 use crate::history_journal::HistoryJournal;
 
@@ -148,6 +149,20 @@ impl GrpcService for Service {
         self.journal.rebuild(&search_settings).await?;
 
         Ok(Response::new(RebuildHistoryReply {
+            version: crate::VERSION.to_string(),
+            protocol: crate::PROTOCOL_VERSION,
+        }))
+    }
+
+    #[instrument(skip_all, level = Level::TRACE)]
+    async fn reload_history(
+        &self,
+        _request: Request<ReloadHistoryRequest>,
+    ) -> Result<Response<ReloadHistoryReply>, Status> {
+        let search_settings = self.daemon_handle.settings().await.search.clone();
+        self.journal.reload(&search_settings).await?;
+
+        Ok(Response::new(ReloadHistoryReply {
             version: crate::VERSION.to_string(),
             protocol: crate::PROTOCOL_VERSION,
         }))

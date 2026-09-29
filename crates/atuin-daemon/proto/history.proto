@@ -83,6 +83,15 @@ message RebuildHistoryReply {
   uint32 protocol = 2;
 }
 
+// The daemon reloads its search index from the history db, picking up rows written to the db by
+// another process (e.g. `atuin import`).
+message ReloadHistoryRequest {}
+
+message ReloadHistoryReply {
+  string version = 1;
+  uint32 protocol = 2;
+}
+
 // The daemon rewrites record store rows into the compact on-disk encoding and vacuums.
 message CompactStoreRequest {}
 
@@ -254,6 +263,8 @@ service History {
   rpc DeleteHistory(stream DeleteHistoryRequest) returns (DeleteHistoryReply);
 
   rpc RebuildHistory(RebuildHistoryRequest) returns (RebuildHistoryReply);
+
+  rpc ReloadHistory(ReloadHistoryRequest) returns (ReloadHistoryReply);
 
   rpc CompactStore(CompactStoreRequest) returns (CompactStoreReply);
 
